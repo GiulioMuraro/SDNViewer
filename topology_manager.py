@@ -10,10 +10,9 @@ class Device():
 
     def __init__(self, name):
         self.name = name
-        self.neighbours = set()
-    
-    def add_neighbours(self, device):
-        self.neighbours.add(device)
+
+    def get_name(self):
+        return self.name
     
     def __str__(self):
         return "{}({})".format(self.__class__.__name__, self.name)
@@ -30,6 +29,7 @@ class TMSwitch(Device):
         super(TMSwitch, name).__init__(name)
 
         self.switch = switch
+        self.neighbours = set()
         # If necessary add others attributes
     
     def get_dpid(self):
@@ -49,6 +49,9 @@ class TMSwitch(Device):
         Return switch datapath object
         """
         return self.switch.dp
+    
+    def add_neighbours(self, switch_neighbour):
+        self.neighbours.add(switch_neighbour)
     
 class TMHost(Device):
     """
@@ -92,7 +95,7 @@ class TopoManager():
         self.all_devices = []   # Set to collect all the devices(switches, hosts) of the topology
         self.all_links = [] # Set to collect all the links of the topology
         self.network_graph = nx.Graph() #   Graph of networkX to represent the topology
-        self.topoSwitches = [] # Set of datapaths
+        self.topoSwitches = [] # Set of dictionary with the dpid and outport for every switch to communicate with another switch
         self.host_to_switch_dpid_port = {} # Nested dictionary to find the corresponding datapath ID(aka. Switch ID) and port to which the host, with the selected MAC address, is connected 
         
         self.flow_rules = [] # Set of rules for the forwarding logic of the Ryu controller
@@ -113,7 +116,7 @@ class TopoManager():
 
             self.all_devices.append(switch)
             self.network_graph.add_node(dpid_str)
-            self.topoSwitches[dpid_str] = {sw.address, sw.ofproto, sw.ofproto_parser}
+            self.topoSwitches[dpid_str] = {}    # Later with a add_link() method this dictionary will be populated
             
             print("Added switch to the topology and the graph: ", dpid_str)
             print("Current network_graph nodes: ", self.network_graph.nodes)
@@ -128,7 +131,7 @@ class TopoManager():
         Returns:
             None
         """
-        name = "host_{}|{}|{}".format(h.name, h.ipv4, h.mac)
+        name = "host_{}".format(h.name)
         host = TMHost(name, h)
         dpid_str = str(h.port.dpid)
         
@@ -138,3 +141,160 @@ class TopoManager():
         self.host_to_switch_dpid_port[h.mac] = {dpid_str, h.port.port_no}    # Saving the dpid and port to which the host is connected
 
         print("Current mapping of the host_to_switch_dpid_port: ", self.host_to_switch_dpid_port)
+
+    def add_link(self, src_switch_dpid, src_port_no, dst_switch_dpid, dst_port_no):
+        """
+        Method to handle the add of the link between two switches, and setting the output port of each
+        Parameters:
+            src_switch_dpid: dpid of the source switch
+            src_port_no: port number of the source switch
+            dst_switch_dpid: dpid of the destination switch
+            dst_port_no: port number of the destination switch
+        Returns:
+            None
+        """
+        # Retrieving the switches from the topology
+        src_dev = self.get_device_by_port(src_switch_dpid, src_port_no)
+        dst_dev = self.get_device_by_port(dst_switch_dpid, dst_port_no)
+        
+        # Adding the two switches to each other as the neighbours
+        src_dev.add_neighbours(dst_dev)
+        dst_dev.add_neighbours(src_dev)
+        
+        # Add the link in the network_graph
+        self.network_graph.add_edge(src_switch_dpid, dst_switch_dpid)
+
+        # Add the output port for each switch
+        self.topoSwitches[src_switch_dpid][dst_switch_dpid] = src_port_no   # The switch src to send something to the switch dst has to use the port src_port_no
+        self.topoSwitches[dst_switch_dpid][src_switch_dpid] = dst_port_no
+
+    def remove_link_between_switches(self, link):
+        """
+        Method to delete a link between two switches
+        Parameters:
+            link: The link to be removed between two switches
+        Returns:
+            None
+        """
+        src_switch_dpid = link.src.dpid
+        dst_switch_dpid = link.dst.dpid
+
+        # Delete the edge from the graph
+        self.network_graph.remove_edge(src_switch_dpid, dst_switch_dpid)
+        
+        # Delete the output port in the topoSwitches list
+        self.topoSwitches[src_switch_dpid] = {}
+        self.topoSwitches[dst_switch_dpid] = {}
+
+    def get_device_by_port(self, dpid, port_no):
+        """
+        Method to obtain the device(host or switch) with the sepcified dpid and port_no
+        Parameters:
+            dpid: dpid of the switch specified, if dev is a switch
+            port_no: the number of the port, if dev is a switch, else if the port_no is of the host, it will return the host as dev
+        Returns:
+            An instance of the device found, else None
+        """
+        for dev in self.all_devices:
+            if isinstance(dev, TMSwitch) and dpid is not None:
+                for port in dev.get_ports():
+                    if port.port_no == port_no and dev.get_dpid() == dpid:
+                        return dev
+            elif isinstance(dev, TMHost) and dpid is None:
+                if port_no == dev.get_port().port_no:
+                    return dev
+        return None
+    
+    def get_device_by_name(self, name):
+        """
+        Method to retrieve a device by its name
+        Parameters:
+            name: the name of the device, so for example "switch_1" or "host_1" or "host_2"
+        Returns:
+            Instance of device switch or host
+        """
+        for dev in self.all_devices:
+            if name == str(dev.get_name()):
+                return dev
+    
+    def get_host_by_mac(self, mac):
+        """
+        Method to retrieve an host by its MAC address
+        Parameters:
+            mac: MAC address of the host
+        Returns:
+            Instance of the host with the selected MAC address        
+        """
+        for dev in self.all_devices:
+            if isinstance(dev, TMHost) and mac == dev.get_mac():
+                return dev
+    
+    def get_host_port_connected_to_switch(self, host_mac, switch_dpid):
+        """
+        Method to retrieve the port of the switch(dpid) to which a selected host with a MAC address is connected to
+        Parameters:
+            host_mac: MAC address of the host to which the port of the switch is connected
+            switch_dpid: the ID of the switch to which the host with host_mac is connected
+        Returns:
+            switch_port: the port of the switch connected to the host
+        """
+        switch_port = None
+        if host_mac in self.host_to_switch_dpid_port and switch_dpid in self.host_to_switch_dpid_port[host_mac]:
+            switch_port = self.host_to_switch_dpid_port[host_mac][switch_dpid]
+            return switch_port
+        else:
+            return None
+
+    def get_shortest_path(self, src_switch_dpid, dst_switch_dpid):
+        """
+        Method to get the shortest path (using Dijkstra's algorithm) between two switch
+        Parameters:
+            src_switch_dpid: Source switch dpid
+            dst_switch_dpid: Destination switch dpid
+        Returns:
+            List containing the shortest path between the 2 switch
+        """
+        print(f"Getting the shortest path between {src_switch_dpid} and {dst_switch_dpid}")
+        try:
+            shortest_path = nx.shortest_path(self.network_graph, source = src_switch_dpid, target = dst_switch_dpid)
+            return shortest_path
+        except nx.NetworkXNoPath:
+            print("Not finding a path between the switches")
+            return None
+        except nx.NodeNotFound:
+            print("Not finding one or both of the passed nodes")
+            return None
+
+    def get_dpid_from_host(self, host_mac):
+        """
+        Method to retrieve the dpid of the switch to which the host with the host_mac address is connected
+        Parameters:
+            host_mac: MAC address of the host
+        Returns:
+            dpid of the switch to which the host is connected
+        """
+        if host_mac in self.host_to_switch_dpid_port:
+            inner_dict = self.host_to_switch_dpid_port[host_mac]
+            return list(inner_dict.keys())[0]   #Retrieve the first key, that is the only key the inner_dict will have. This first key is the dpid of the switch
+        
+    def get_output_port(self, src_switch_dpid, dst_switch_dpid):
+        """
+        Method to retrieve the output port for the src_switch to send data to dst_switch(The output port is of the src_switch)
+        Parameters:
+            src_switch_dpid: dpid of the source switch
+            dst_switch_dpid: dpid of the destination switch
+        Returns:
+            The int value of the output port of the src_switch, None if there isn't
+        """
+        path = self.get_shortest_path(src_switch_dpid, dst_switch_dpid)
+
+        # If the path is existent and is longer than 1 hop
+        if path is not None and len(path) > 1:
+            if src_switch_dpid in self.topoSwitches and dst_switch_dpid in self.topoSwitches[src_switch_dpid]:  # If the output port for the src_switch to the dst_switch is set
+                return self.topoSwitches[src_switch_dpid][dst_switch_dpid]
+    
+    #def add_rule_to_dict(self, switch, in_port, out_port):
+        # ...
+    
+    #def get_rule_from_dict(self, switch, in_port):
+        # ...
