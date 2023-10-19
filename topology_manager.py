@@ -123,6 +123,34 @@ class TopoManager():
         else:
             print("The switch is already inside the topology. Nothing is being added")
 
+    def remove_switch(self, sw):
+        """
+        Method to handle the removal of a switch event in the topology.
+        Parameters:
+            sw: The instance of the switch to be removed from the topology.
+        Returns:
+            None
+        """
+        dpid_str = str(sw.dp.id)
+
+        if dpid_str in self.topoSwitches:  # Check if the switch is in the topology
+            # Clean up any associated data or connections here
+
+            # Remove the switch from the list of all devices
+            self.all_devices = [device for device in self.all_devices if device.name != "switch_{}".format(dpid_str)]
+
+            # Remove the switch from the network graph
+            self.network_graph.remove_node(dpid_str)
+
+            # Remove the switch from the topoSwitches dictionary
+            del self.topoSwitches[dpid_str]
+
+            print("Removed switch from the topology and the graph: ", dpid_str)
+            print("Current network_graph nodes: ", self.network_graph.nodes)
+        else:
+            print("The switch is not in the topology. Nothing to remove.")
+
+
     def add_host(self, h):
         """
         Method to handle the add host event in the topology
