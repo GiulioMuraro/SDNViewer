@@ -4,7 +4,7 @@ You can use this framework to collect information about
 the network topology and install rules to implement shortest path switching
 """
 
-from ryu.app import app_manager
+from ryu.base import app_manager
 from ryu.controller import ofp_event
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
@@ -20,10 +20,21 @@ from topology_manager import TopoManager
 import socket
 import pickle
 
-#class CommunicationAPI(ControllerBase):
+class CommunicationAPI(ControllerBase):
+
+    def __init__(self, req, link, data, **config):
+        super(CommunicationAPI, self).__init__(req, link, data, **config)
+        self.controller_app = data['controller_instance']
+    
+    @route('communication', '/communication/{src_host_name}/{dst_host_name}', methods = ['GET'])
+    def initiating_comunication(self, req, src_host_name, dst_host_name):
+        print("Received request to initialize the communication")
+        self.controller_app.set_up_rule_for_hosts(src_host_name, dst_host_name)
+
+
 
 class CustomRyuController(app_manager.RyuApp):
-    # Select the versione of the OpenFlow protocol
+    # Select the version of the OpenFlow protocol
     OFP_VERSION = [ofproto_v1_5.OFP_VERSION]
 
     # The application will deploy a REST API interface to set the rules and manage the message to the controller from the devices
@@ -41,8 +52,8 @@ class CustomRyuController(app_manager.RyuApp):
         self.portRyuApp = 6654
 
         # Variables for the wsgi application and to provide a REST API interface for the network
-        # wsgi = kwargs['wsgi']
-        # wsgi.register(CommunicationAPI, {'controller_instance': self})
+        wsgi = kwargs['wsgi']
+        wsgi.register(CommunicationAPI, {'controller_instance': self})
         self.controller_instance = self
 
     @set_ev_cls(event.EventSwitchEnter)
@@ -52,9 +63,10 @@ class CustomRyuController(app_manager.RyuApp):
         """
         switch = ev.switch
         
-        print("Added switch! switch_%d with ports: ", switch.dp.id)
+        print(f"Added switch! switch_{switch.dp.id} with ports: ")
         for port in switch.ports:
-            print("\t%d : %s", port.port_no, port.hw_addr)
+            print(f"\t{port.port_no} : {port.hw_addr}")
+
 
         # Add the switch with the method of the topomanager
         self.tm.add_switch(switch)
@@ -76,7 +88,7 @@ class CustomRyuController(app_manager.RyuApp):
         """
         host = ev.host
 
-        print("Host added! host_%d, with MAC: %s and IP: %s, on switch_%d on port: %d", host.name, host.mac, host.ipv4, host.port.dpid, host.port.port_no)
+        print(f"Host added! host_{host.name}, with MAC: {host.mac} and IP: {host.ipv4}, on switch_{host.port.dpid} on port: {host.port.port_no}")
 
         # Updating topology network
         self.tm.add_host(host)
@@ -94,7 +106,7 @@ class CustomRyuController(app_manager.RyuApp):
         dst_switch_dpid = link.dst.dpid
         dst_switch_port = link.dst.port_no
 
-        print("Link added! switch_%d(port: %d) -> switch_%d(port: %d)", src_switch_dpid, src_switch_port, dst_switch_dpid, dst_switch_port)
+        print(f"Link added! switch_{src_switch_dpid}(port: {src_switch_port}) -> switch_{dst_switch_dpid}(port: {dst_switch_port})")
 
         # Adding the link to the topology
         self.tm.add_link(src_switch_dpid, src_switch_port, dst_switch_dpid, dst_switch_port)
@@ -116,13 +128,13 @@ class CustomRyuController(app_manager.RyuApp):
         This includes links for hosts as well as links between switches.
         """
         port = ev.port
-        print("Port Changed:  switch_%d/%d (MAC: %s),  Status: %s", port.dpid, port.port_no, port.hw_addr, "UP" if port.is_live() else "DOWN")
+        print(f"Port Changed: switch_{port.dpid}/{port.port_no} (MAC: {port.hw_addr}), Status: {'UP' if port.is_live() else 'DOWN'}")
 
     def send_to_thread(self):
         """
         Method to send through a Thread the updated network_graph
         """
-        graph = self.tm.gui_graph 
+        graph = self.tm.network_graph 
         
         
         # Serialize the graph using pickle
@@ -138,39 +150,117 @@ class CustomRyuController(app_manager.RyuApp):
         except Exception as e:
             print("Error sending network_graph:", e)
 
-    def set_up_rule_for_hosts(self, src_ip, dst_ip):
+    def set_up_rule_for_hosts(self, src_host_name, dst_host_name):
         """
         Method callable from the CommunicationAPI to set the rules between the switches to let the communication flow between hosts
         Parameters:
-            src_ip: the IP address of the source host
-            dst_ip: the IP address of the destination host
+            src_host_name: name of the source host
+            dst_host_name: name of the destination source
         Returns:
             None
         """
-        # ...
+        src_ip = self.tm.get_device_by_name(f"{src_host_name}").get_ip()
+        dst_ip = self.tm.get_device_by_name(f"{dst_host_name}").get_ip()
+        src_mac = self.tm.get_mac_host_by_ip(src_ip)
+        dst_mac = self.tm.get_mac_host_by_ip(dst_ip)
+        src_dpid = self.tm.get_dpid_from_host[src_mac]  # dpid of the datapath connected to the src_host
+        dst_dpid = self.tm.get_dpid_from_host[dst_mac]  # dpid of the datapath connected to the dst_host
+        
+        parser = ofproto_v1_5_parser
+
+        print(f"Setting up the rules between host(IP: {src_ip} / MAC: {src_mac}) and host(IP: {dst_ip} / MAC: {dst_mac})")
+
+        if src_dpid in self.tm.topoSwitches and dst_dpid in self.tm.topoSwitches:
+            path = self.tm.get_shortest_path(src_dpid, dst_dpid)    # Find the list of nodes to get from the source to the destination
+            if path is not None and len(path) > 1:
+                print(f"The shortest path is: {path}")
+                for i in range(0, len(path)):
+                    if i == 0:  # If it's the first switch of the hops/steps. Create rule to manage packets from src_host to intranet and from the intranet to src_host
+                        first = path[i]
+                        second = path[i + 1]
+                        firstDatapath = self.tm.get_device_by_name(f"switch_{first}").get_dp()
+                        
+                        # Extract the in and out port of the first switch
+                        out_port = self.tm.get_output_port(first, second)
+                        in_port = self.tm.get_host_port_connected_to_switch(src_mac, first)
+
+                        # Creating flow rule from the intranet to the host
+                        actions = self.create_actions(out_port = in_port)
+                        match = self.create_match(in_port = out_port, src_mac = dst_mac, dst_mac = src_mac)
+                        self.add_flow(first, match, actions)
+                        self.tm.add_rule_to_dict(firstDatapath, in_port = out_port, dl_src = dst_mac, dl_dst = src_mac, out_port = in_port)
+
+                        # Creating flow rule from the host to the intranet
+                        actions = self.create_actions(out_port = out_port)
+                        match = self.create_match(in_port = in_port, src_mac = src_mac, dst_mac = dst_mac)
+                        self.add_flow(first, match, actions)
+                        self.tm.add_rule_to_dict(first, in_port = in_port, dl_src = src_mac, dl_dst = dst_mac, out_port = out_port)
+
+                    if i == len(path) - 1:  # If it's the last switch of the hops/steps. Create rule to manage the packets from the dst_host to the intranet and from the intranet to the dst_host
+                        last = path[i]
+                        secondToLast = path[i - 1]
+                        lastDatapath = self.tm.get_device_by_name(f"switch_{last}").get_dp()
+
+                        # Extracting the in and out port of the last switch
+                        out_port = self.tm.get_host_port_connected_to_switch(dst_mac, last)
+                        in_port = self.tm.get_output_port(last, secondToLast)
+
+                        # Creating flow rule from the intranet to the host
+                        actions = self.create_actions(out_port = out_port)
+                        match = self.create_match(in_port = in_port, src_mac = src_mac, dst_mac = dst_mac)
+                        self.add_flow(lastDatapath, match, actions)
+                        self.tm.add_rule_to_dict(last, in_port = in_port, dl_src = src_mac, dl_dst = dst_mac, out_port = out_port)
+
+                        # Creating flow rule from the host to the intranet
+                        actions = self.create_actions(out_port = in_port)
+                        match = self.create_match(in_port = out_port, src_mac = dst_mac, dst_mac = src_mac)
+                        self.add_flow(lastDatapath, match, actions)
+                        self.tm.add_rule_to_dict(last, in_port = out_port, dl_src = dst_mac, dl_dst = src_mac, out_port = in_port)
+
+                    else:   # If it's one of the switches between the first and the last. Connect the n switch with the previous(n - 1) and with the following(n + 1)
+                        prev = path[i - 1]
+                        current = path[i]
+                        next = path[i + 1]
+                        currentDatapath = self.tm.get_device_by_name(f"switch_{current}").get_dp()
+
+                        # Extracting the in and out port of the current switch
+                        out_port = self.tm.get_output_port(current, next)   # Where the packet is going
+                        in_port = self.tm.get_output_port(current, prev)    # Where the packet comes from
+
+                        # Creating flow rule from the previous switch to the current
+                        actions = self.create_actions(out_port = out_port)
+                        match = self.create_match(in_port = in_port, src_mac = src_mac, dst_mac = dst_mac)
+                        self.add_flow(currentDatapath, match, actions)
+                        self.tm.add_rule_to_dict(current, in_port = in_port, dl_src = src_mac, dl_dst = dst_mac, out_port = out_port)
+
+                        # Creating flow rule from the current switch to the next
+                        actions = self.create_actions(out_port = in_port)
+                        match = self.create_match(in_port = out_port, src_mac = dst_mac, dst_mac = src_mac)
+                        self.add_flow(currentDatapath, match, actions)
+                        self.tm.add_rule_to_dict(current, in_port = out_port, dl_src = dst_mac, dl_dst = src_mac, out_port = in_port)
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
-    def packet_in_handler(self, ev):
+    def _packet_in_handler(self, ev):
         """
         Event handler for the packet in event. Sets up the proper forwarding rules between the switches
         """
-        msg = event.msg
+        msg = ev.msg
         datapath = msg.datapath
-        in_port = msg.in_port   # Port of the switch that received the packet
+        in_port = msg.match['in_port']   # Port of the switch that received the packet
 
         pkt = packet.Packet(msg.data)   # Convert the raw packet data into something more manageable
         eth_header = pkt.get_protocols(ethernet.ethernet)[0]   # Extract the Ethernet head from the list of the Ethernet frames
         src = eth_header.src   # MAC address of the source host
         dst = eth_header.dst   # MAC address of the destination host
-        dpid = datapath.dpid    # dpid of the switch that received the packet in and triggered the packet_in event
+        dpid = datapath.id    # dpid of the switch that received the packet in and triggered the packet_in event
 
         if eth_header.ethertype == ether_types.ETH_TYPE_LLDP:
             return  # Ignore the link layer discovery packets from the switches
         
         if eth_header.ethertype == ether_types.ETH_TYPE_ARP:
+            print("Ethernet Header: ", eth_header)
             arp_packet = pkt.get_protocol(arp.arp)
             if arp_packet:
-                
                 if arp_packet.opcode == arp.ARP_REQUEST:    # Handle ARP request
                     # self.handle_arp_request(datapath, in_port, eth_header, arp_packet)
                     print(f"ARP request received from switch_{dpid} with MAC: {src}")
@@ -210,3 +300,45 @@ class CustomRyuController(app_manager.RyuApp):
             actions = actions)
         
         datapath.send_msg(flow_to_add_to_switch)    # Send the message to set up the flow, from the controller to the switch
+
+    def delete_flow_rule(self, datapath, in_port, out_port):
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+
+        # Create a match for the existing rule based on in_port and out_port
+        match = parser.OFPMatch(in_port=in_port, out_port=out_port)
+
+        # Create a flow mod message to delete the rule
+        flow_mod = parser.OFPFlowMod(
+            datapath=datapath,
+            command=ofproto.OFPFC_DELETE_STRICT,  # Use DELETE_STRICT for precise deletion
+            out_port=ofproto.OFPP_ANY,
+            out_group=ofproto.OFPG_ANY,
+            match=match  # Set the match condition
+        )
+
+        # Send the flow mod message to the switch
+        datapath.send_msg(flow_mod)
+
+    def create_match(self, in_port, src_mac, dst_mac):
+        """
+        Method to create a match object based on a in_port, source MAC address and destination MAC address
+        """
+        parser = ofproto_v1_5_parser
+        match = parser.OFPMatch(
+            in_port = in_port,
+            dl_src = src_mac,
+            dl_dst = dst_mac
+        )
+        return match
+    
+    def create_actions(self, out_port):
+        """
+        Method to create an actions object based on an out_port
+        """
+        parser = ofproto_v1_5_parser
+        actions = [parser.OFPActionOutput(out_port)]
+        return actions
+
+
+

@@ -26,7 +26,7 @@ class TMSwitch(Device):
     """
 
     def __init__(self, name, switch):
-        super(TMSwitch, name).__init__(name)
+        super(TMSwitch, self).__init__(name)
 
         self.switch = switch
         self.neighbours = set()
@@ -62,7 +62,7 @@ class TMHost(Device):
     """
 
     def __init__(self, name, host):
-        super(TMHost, name).__init__(name)
+        super(TMHost, self).__init__(name)
 
         self.host = host
         # Add more attributes if necessary
@@ -95,10 +95,10 @@ class TopoManager():
         self.all_devices = []   # Set to collect all the devices(switches, hosts) of the topology
         self.all_links = [] # Set to collect all the links of the topology
         self.network_graph = nx.Graph() #   Graph of networkX to represent the topology
-        self.topoSwitches = [] # Set of dictionary with the dpid and outport for every switch to communicate with another switch
+        self.topoSwitches = {} # Dictionary of dictionary with the dpid and outport for every switch to communicate with another switch
         self.host_to_switch_dpid_port = {} # Nested dictionary to find the corresponding datapath ID(aka. Switch ID) and port to which the host, with the selected MAC address, is connected 
         
-        self.flow_rules = [] # Set of rules for the forwarding logic of the Ryu controller
+        self.flow_rules = {} # Set of rules for the forwarding logic of the Ryu controller
 
     def add_switch(self, sw):
         """
@@ -186,11 +186,20 @@ class TopoManager():
         dst_dev = self.get_device_by_port(dst_switch_dpid, dst_port_no)
         
         # Adding the two switches to each other as the neighbours
-        src_dev.add_neighbours(dst_dev)
-        dst_dev.add_neighbours(src_dev)
+        if src_dev and dst_dev and isinstance(src_dev, TMSwitch) and isinstance(dst_dev, TMSwitch):
+            src_dev.add_neighbours(dst_dev)
+            dst_dev.add_neighbours(src_dev)
         
         # Add the link in the network_graph
         self.network_graph.add_edge(src_switch_dpid, dst_switch_dpid)
+
+        # Check and create entries for source switch if they don't exist
+        if src_switch_dpid not in self.topoSwitches:
+            self.topoSwitches[src_switch_dpid] = {}
+
+        # Check and create entries for destination switch if they don't exist
+        if dst_switch_dpid not in self.topoSwitches:
+            self.topoSwitches[dst_switch_dpid] = {}
 
         # Add the output port for each switch
         self.topoSwitches[src_switch_dpid][dst_switch_dpid] = src_port_no   # The switch src to send something to the switch dst has to use the port src_port_no
@@ -214,6 +223,18 @@ class TopoManager():
         self.topoSwitches[src_switch_dpid] = {}
         self.topoSwitches[dst_switch_dpid] = {}
 
+    def get_mac_host_by_ip(self, ip_host):
+        """
+        Method to get the MAC address of an host by its IP address
+        Parameters:
+            ip_host: IP address of the host you want to get the MAC address of
+        Returns:
+            MAC address of the host
+        """
+        for dev in self.all_devices:
+            if isinstance(dev, TMHost) and dev.get_ip() == ip_host:
+                return dev.get_mac()
+
     def get_device_by_port(self, dpid, port_no):
         """
         Method to obtain the device(host or switch) with the sepcified dpid and port_no
@@ -224,11 +245,11 @@ class TopoManager():
             An instance of the device found, else None
         """
         for dev in self.all_devices:
-            if isinstance(dev, TMSwitch) and dpid is not None:
+            if isinstance(dev, TMSwitch):
                 for port in dev.get_ports():
                     if port.port_no == port_no and dev.get_dpid() == dpid:
                         return dev
-            elif isinstance(dev, TMHost) and dpid is None:
+            elif isinstance(dev, TMHost):
                 if port_no == dev.get_port().port_no:
                     return dev
         return None
@@ -321,8 +342,74 @@ class TopoManager():
             if src_switch_dpid in self.topoSwitches and dst_switch_dpid in self.topoSwitches[src_switch_dpid]:  # If the output port for the src_switch to the dst_switch is set
                 return self.topoSwitches[src_switch_dpid][dst_switch_dpid]
     
-    #def add_rule_to_dict(self, switch, in_port, out_port):
-        # ...
-    
-    #def get_rule_from_dict(self, switch, in_port):
-        # ...
+    def add_rule_to_dict(self, dpid, in_port, dl_src, dl_dst, out_port):
+        """
+        Method to add a forwarding rule to the topology manager, regarding a switch(datapath)
+        Parameters:
+            dpid: switch to add a forwarding rule to
+            in_port: in_port of the switch where it receives the packet
+            dl_src: MAC address of the source host
+            dl_dst: MAC address of the destination host
+            out_port: out_port where the packet has to be sent from the datapath
+        Returns:
+            None
+        """
+        # Create the flow_key using in_port, dl_src, and dl_dst
+        flow_key = (in_port, dl_src, dl_dst)
+        
+        # Check if the dpid is already in the flow_rules dictionary
+        if dpid not in self.flow_rules:
+            # If not, add the dpid as a key with an empty dictionary as the value
+            self.flow_rules[dpid] = {}
+        
+        # Add the out_port to the corresponding flow_key for the specific dpid
+        self.flow_rules[dpid][flow_key] = out_port
+
+    def get_rule_from_dict(self, dpid, in_port, dl_src, dl_dst):
+        """
+        Method to retrieve the out_port from the flow_rules dictionary based on the provided parameters.
+        Parameters:
+            dpid: dpid of the switch
+            in_port: in_port of the switch where it receives the packet
+            dl_src: MAC address of the source host
+            dl_dst: MAC address of the destination host
+        Returns:
+            out_port: the out_port where the packet should be sent from the datapath
+        """
+        # Check if the dpid is present in the flow_rules dictionary
+        if dpid in self.flow_rules:
+            flow_key = (in_port, dl_src, dl_dst)
+            try:
+                # Attempt to retrieve the out_port for the given key
+                out_port = self.flow_rules[dpid][flow_key]
+                return out_port
+            except KeyError:
+                # Handle the case when the key is not in the dictionary
+                print(f"No entry flow found for dpid {dpid} with match fields: {flow_key}")
+                return None
+        else:
+            print(f"No entry flow found for dpid {dpid}")
+            return None
+
+    def get_rules_from_dict(self, dpid, in_port):
+        """
+        Method to retrieve all rules with a specific in_port from the flow_rules dictionary for a given DPID.
+        Parameters:
+            dpid: DPID of the switch
+            in_port: in_port of the switch where it receives the packet
+        Returns:
+            rules: a dictionary containing all rules associated with the provided in_port for the given DPID
+        """
+        rules = {}  # Initialize an empty dictionary to store the rules
+        
+        # Check if the dpid is present in the flow_rules dictionary
+        if dpid in self.flow_rules:
+            for flow_key, out_port in self.flow_rules[dpid].items():
+                # Check if the in_port in the flow_key matches the provided in_port
+                if flow_key[0] == in_port:
+                    # Add the rule to the rules dictionary
+                    rules[flow_key] = out_port
+        else:
+            print(f"No entry flow found for dpid {dpid}")
+        
+        return rules
