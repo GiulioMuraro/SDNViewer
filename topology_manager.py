@@ -1,5 +1,9 @@
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 import networkx as nx
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg as FigureCanvas
+import matplotlib
+matplotlib.use('TkAgg')
+import matplotlib.pyplot as plt
 
 class Device():
     """
@@ -100,6 +104,8 @@ class TopoManager():
         
         self.flow_rules = {} # Set of rules for the forwarding logic of the Ryu controller
 
+        self.counter = 0
+
     def add_switch(self, sw):
         """
         Method to handle the add switch event in the topology  
@@ -108,7 +114,7 @@ class TopoManager():
         Returns:
             None
         """
-        dpid_str = str(sw.dp.id)
+        dpid_str = sw.dp.id
 
         if dpid_str not in self.topoSwitches:   # If the new switch is not inside the topology, it will be added
             name = "switch_{}".format(str(dpid_str))
@@ -121,7 +127,9 @@ class TopoManager():
             print("Added switch to the topology and the graph: ", dpid_str)
             print("Current network_graph nodes: ", self.network_graph.nodes)
         else:
-            print("The switch is already inside the topology. Nothing is being added")
+            print(f"The switch_{dpid_str} is already inside the topology. Nothing is being added")
+
+        self.debug_show_topology()
 
     def remove_switch(self, sw):
         """
@@ -145,7 +153,7 @@ class TopoManager():
             # Remove the switch from the topoSwitches dictionary
             del self.topoSwitches[dpid_str]
 
-            print("Removed switch from the topology and the graph: ", dpid_str)
+            print("Removed switch from the topology and the graph: switch_", dpid_str)
             print("Current network_graph nodes: ", self.network_graph.nodes)
         else:
             print("The switch is not in the topology. Nothing to remove.")
@@ -159,16 +167,32 @@ class TopoManager():
         Returns:
             None
         """
-        name = "host_{}".format(h.name)
+        name = "host_{}".format(h.mac)
         host = TMHost(name, h)
-        dpid_str = str(h.port.dpid)
+        dpid = h.port.dpid
         
         self.all_devices.append(host)
         self.network_graph.add_node(name)
-        self.network_graph.add_edge(dpid_str, name) # Adding the edge from the host to the switch. In the network_graph the hosts are saved as their names, and the switches as their dpid
-        self.host_to_switch_dpid_port[h.mac] = {dpid_str, h.port.port_no}    # Saving the dpid and port to which the host is connected
+        self.network_graph.add_edge(dpid, name) # Adding the edge from the host to the switch. In the network_graph the hosts are saved as their names, and the switches as their dpid
+        self.host_to_switch_dpid_port[h.mac] = {dpid, h.port.port_no}    # Saving the dpid and port to which the host is connected
 
         print("Current mapping of the host_to_switch_dpid_port: ", self.host_to_switch_dpid_port)
+
+        self.debug_show_topology()
+
+        pos = nx.spring_layout(self.network_graph)
+        nx.draw(self.network_graph, pos, with_labels=True, node_size=500, font_size=10, font_color='black')
+    
+        # Create a Matplotlib figure and draw the graph on it
+        fig = plt.figure(figsize=(3, 3))
+        canvas = FigureCanvas(fig)
+        ax = fig.add_subplot(111)
+        ax.set_axis_off()
+        nx.draw(self.network_graph, pos, ax=ax, with_labels=True, node_size=500, font_size=10, font_color='black')
+    
+        # Save the figure to an image file
+        canvas.print_png("graph_image" + str(self.counter) + ".png")
+        self.counter+=1
 
     def add_link(self, src_switch_dpid, src_port_no, dst_switch_dpid, dst_port_no):
         """
@@ -204,6 +228,8 @@ class TopoManager():
         # Add the output port for each switch
         self.topoSwitches[src_switch_dpid][dst_switch_dpid] = src_port_no   # The switch src to send something to the switch dst has to use the port src_port_no
         self.topoSwitches[dst_switch_dpid][src_switch_dpid] = dst_port_no
+
+        self.debug_show_topology()
 
     def remove_link_between_switches(self, link):
         """
@@ -413,3 +439,27 @@ class TopoManager():
             print(f"No entry flow found for dpid {dpid}")
         
         return rules
+
+    def debug_show_topology(self):
+        """
+        Method to retrieve all kinds of information based on the current topology of the SDN, to check that everything works fine
+        """
+        print("DEVICES: ")
+        print(self.all_devices)
+        
+        print("LINKS: ")
+        print(self.all_links)
+        
+        print("DATAPATHS: ")
+        print(self.topoSwitches)
+
+        print("DATAPATH TO HOST LOOKUP: ")
+        print(self.host_to_switch_dpid_port)
+
+        print("NETWORK GRAPH: ")
+        print(self.network_graph)
+        print("Nodes: ", self.network_graph.nodes)
+        print("Edges: ", self.network_graph.edges)
+
+        print("FLOW RULES: ")
+        print(self.flow_rules)

@@ -55,12 +55,14 @@ class TriangleTopo(Topo):
         s1 = self.addSwitch('switch_1')
         s2 = self.addSwitch('switch_2')
         s3 = self.addSwitch('switch_3')
-        self.addLink(h1, s1)
-        self.addLink(h2, s2)
-        self.addLink(h3, s3)
+        
         self.addLink(s1, s2)
         self.addLink(s2, s3)
         self.addLink(s3, s1)
+
+        self.addLink(h1, s1)
+        self.addLink(h2, s2)
+        self.addLink(h3, s3)
 
 # Topology with some loops to test network
 class SomeLoopsTopo(Topo):
@@ -203,7 +205,7 @@ def main():
         topo = TOPOLOGIES[args.command]()
 
     # Create the network
-    net = Mininet(topo = topo, autoSetMacs = True, controller = RemoteController)
+    net = Mininet(topo = topo, autoSetMacs = True, controller = RemoteController, waitConnected = True)
 
     # Disable the IPv6 on the hosts and switches
     # This avoid messages from the ICMPv6 that can complicate the link discovery
@@ -215,15 +217,24 @@ def main():
     # Run network
     net.start()
 
-    # Wait 1 second to let all the devices set themselves up
-    time.sleep(1)
+    # Wait 5 second to let all the devices set themselves up
+    time.sleep(6)
+
+    # Set OpenFlow version for switches
+    for switch in net.switches:
+        print('ovs-vsctl set bridge ' + switch.name + ' protocols=OpenFlow14')
+        switch.cmd('ovs-vsctl set bridge ' + switch.name + ' protocols=OpenFlow14')
 
     # ARP requests between hosts
     for h in net.hosts:
         # Send a "join message", which is a gratuitous ARP
         info('*** Sending ARPing from host %s\n' % (h.name))
-        send_arping(h)  
+        send_arping(h)
 
+    # Check the version of the OFP of the switches
+    for sw in net.switches:
+        print(f"Version of the OFP in the {sw.name}: " + sw.cmd('ovs-vsctl get bridge ' + sw.name + ' protocols'))
+    
     CLI(net)
 
     net.stop()

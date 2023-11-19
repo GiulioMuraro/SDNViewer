@@ -5,10 +5,10 @@ the network topology and install rules to implement shortest path switching
 """
 
 from ryu.base import app_manager
-from ryu.controller import ofp_event
+from ryu.controller import ofp_event, ofp_handler
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
-from ryu.ofproto import ofproto_v1_5, ofproto_v1_5_parser
+from ryu.ofproto import ofproto_v1_4, ofproto_v1_4_parser
 
 from ryu.topology import event
 from ryu.app.wsgi import ControllerBase, WSGIApplication, route
@@ -35,7 +35,7 @@ class CommunicationAPI(ControllerBase):
 
 class CustomRyuController(app_manager.RyuApp):
     # Select the version of the OpenFlow protocol
-    OFP_VERSION = [ofproto_v1_5.OFP_VERSION]
+    OFP_VERSION = [ofproto_v1_4.OFP_VERSION]
 
     # The application will deploy a REST API interface to set the rules and manage the message to the controller from the devices
     _CONTEXTS = {'wsgi': WSGIApplication}
@@ -49,7 +49,7 @@ class CustomRyuController(app_manager.RyuApp):
 
         # IP and Port of the controller
         self.ipRyuApp = "127.0.0.1"
-        self.portRyuApp = 6654
+        self.portRyuApp = 6653
 
         # Variables for the wsgi application and to provide a REST API interface for the network
         wsgi = kwargs['wsgi']
@@ -78,22 +78,24 @@ class CustomRyuController(app_manager.RyuApp):
         """
         switch = ev.switch
 
+        print(f"Removed switch! switch_{switch.dp.id} with ports: ")
+        for port in switch.ports:
+            print(f"\t{port.port_no} : {port.hw_addr}")
+
         # Remove the switch from the topology
         self.tm.remove_switch(switch)
 
-    @set_ev_cls(event.EventHostAdd)
+    @set_ev_cls(event.EventHostAdd, MAIN_DISPATCHER)
     def handle_add_host(self, ev):
         """
         Event handler to add an host when it has joined the network
         """
         host = ev.host
 
-        print(f"Host added! host_{host.name}, with MAC: {host.mac} and IP: {host.ipv4}, on switch_{host.port.dpid} on port: {host.port.port_no}")
+        print(f"Host added! Host with MAC: {host.mac} and IP: {host.ipv4}, on switch_{host.port.dpid} on port: {host.port.port_no}")
 
         # Updating topology network
         self.tm.add_host(host)
-
-        print("Current network_graph: ", self.tm.network_graph)
 
     @set_ev_cls(event.EventLinkAdd)
     def handle_add_link(self, ev):
@@ -129,6 +131,19 @@ class CustomRyuController(app_manager.RyuApp):
         """
         port = ev.port
         print(f"Port Changed: switch_{port.dpid}/{port.port_no} (MAC: {port.hw_addr}), Status: {'UP' if port.is_live() else 'DOWN'}")
+
+    @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
+    def switch_features_handler(self, ev):
+        datapath = ev.msg.datapath
+        handler = ofp_handler.OFPHandler(datapath, version = ofproto_v1_4.OFP_VERSION)
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+
+        # Install the flow rule to send ARP requests from hosts to the controller
+        match = parser.OFPMatch(eth_type = ether_types.ETH_TYPE_ARP)
+        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
+
+        self.add_flow(datapath, match, actions, 100)
 
     def send_to_thread(self):
         """
@@ -166,7 +181,7 @@ class CustomRyuController(app_manager.RyuApp):
         src_dpid = self.tm.get_dpid_from_host[src_mac]  # dpid of the datapath connected to the src_host
         dst_dpid = self.tm.get_dpid_from_host[dst_mac]  # dpid of the datapath connected to the dst_host
         
-        parser = ofproto_v1_5_parser
+        parser = ofproto_v1_4_parser
 
         print(f"Setting up the rules between host(IP: {src_ip} / MAC: {src_mac}) and host(IP: {dst_ip} / MAC: {dst_mac})")
 
@@ -276,18 +291,22 @@ class CustomRyuController(app_manager.RyuApp):
 
     # def handle_arp_request(self, datapath, in_port, eth_header,  arp_packet):    
 
-    def add_flow(self, datapath, match, actions):
+    def add_flow(self, datapath, match, actions, priority = ofproto_v1_4.OFP_DEFAULT_PRIORITY):
         """
         Method to add a flow on a given datapath(switch), with specific matches and telling to perform a determinate action
         Parameters:
             datapath: the switch on which the rules will be installed
             match: the object that contains useful information and the in_port
             actions: the object containing useful information on the actions to take with the packets, and the out_port
+            priority: priority of the evaluation of the flow rule by the switch
         Returns:
             None
         """
-        ofproto = ofproto_v1_5
-        parser = ofproto_v1_5_parser
+        ofproto = ofproto_v1_4
+        parser = ofproto_v1_4_parser
+
+        # List of instructions for the flowMod
+        instruction = parser.OFPInstructionActions(type_ = ofproto.OFPIT_APPLY_ACTIONS, actions = actions)
 
         flow_to_add_to_switch = parser.OFPFlowMod(
             datapath = datapath, 
@@ -295,9 +314,9 @@ class CustomRyuController(app_manager.RyuApp):
             command = ofproto.OFPFC_ADD, 
             idle_timeout = 0, 
             hard_timeout = 0, 
-            priority = ofproto.OFP_DEFAULT_PRIORITY, 
+            priority = priority, 
             match = match,
-            actions = actions)
+            instructions = [instruction])
         
         datapath.send_msg(flow_to_add_to_switch)    # Send the message to set up the flow, from the controller to the switch
 
@@ -324,7 +343,7 @@ class CustomRyuController(app_manager.RyuApp):
         """
         Method to create a match object based on a in_port, source MAC address and destination MAC address
         """
-        parser = ofproto_v1_5_parser
+        parser = ofproto_v1_4_parser
         match = parser.OFPMatch(
             in_port = in_port,
             dl_src = src_mac,
@@ -336,9 +355,15 @@ class CustomRyuController(app_manager.RyuApp):
         """
         Method to create an actions object based on an out_port
         """
-        parser = ofproto_v1_5_parser
+        parser = ofproto_v1_4_parser
         actions = [parser.OFPActionOutput(out_port)]
         return actions
+    
+    def install_arp_flow_rule(self, datapath):
+        """
+        Method to install flow rules at the initialization of the switch in the topology, so the hosts can send ARP requests to the controller
+        """
+        ofproto = ofproto_v1_4
+        parser = ofproto_v1_4_parser
 
-
-
+        #match = parser.OFPMatch(eth)
