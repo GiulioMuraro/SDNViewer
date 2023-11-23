@@ -26,10 +26,10 @@ class CommunicationAPI(ControllerBase):
         super(CommunicationAPI, self).__init__(req, link, data, **config)
         self.controller_app = data['controller_instance']
     
-    @route('communication', '/communication/{src_host_name}/{dst_host_name}', methods = ['GET'])
-    def initiating_comunication(self, req, src_host_name, dst_host_name):
+    @route('communication', '/communication/{src_host_ip}/{dst_host_ip}', methods = ['GET'])
+    def initiating_comunication(self, req, src_host_ip, dst_host_ip):
         print("Received request to initialize the communication")
-        self.controller_app.set_up_rule_for_hosts(src_host_name, dst_host_name)
+        self.controller_app.set_up_rule_for_hosts(src_host_ip, dst_host_ip)
 
 
 
@@ -63,10 +63,9 @@ class CustomRyuController(app_manager.RyuApp):
         """
         switch = ev.switch
         
-        print(f"Added switch! switch_{switch.dp.id} with ports: ")
+        print(f"Trying to add switch! switch_{switch.dp.id} with ports: ")
         for port in switch.ports:
             print(f"\t{port.port_no} : {port.hw_addr}")
-
 
         # Add the switch with the method of the topomanager
         self.tm.add_switch(switch)
@@ -78,7 +77,7 @@ class CustomRyuController(app_manager.RyuApp):
         """
         switch = ev.switch
 
-        print(f"Removed switch! switch_{switch.dp.id} with ports: ")
+        print(f"Trying to remove switch! switch_{switch.dp.id} with ports: ")
         for port in switch.ports:
             print(f"\t{port.port_no} : {port.hw_addr}")
 
@@ -119,6 +118,12 @@ class CustomRyuController(app_manager.RyuApp):
         Event handler to remove a link when a connection is done between two devices
         """
         link = ev.link
+        src_switch_dpid = link.src.dpid
+        src_switch_port = link.src.port_no
+        dst_switch_dpid = link.dst.dpid
+        dst_switch_port = link.dst.port_no
+
+        print(f"Trying to remove link! switch_{src_switch_dpid}(port: {src_switch_port}) -> switch_{dst_switch_dpid}(port: {dst_switch_port})")
         
         # Remove the link between two switches in the topology
         self.tm.remove_link_between_switches(link)
@@ -165,25 +170,23 @@ class CustomRyuController(app_manager.RyuApp):
         except Exception as e:
             print("Error sending network_graph:", e)
 
-    def set_up_rule_for_hosts(self, src_host_name, dst_host_name):
+    def set_up_rule_for_hosts(self, src_host_ip, dst_host_ip):
         """
         Method callable from the CommunicationAPI to set the rules between the switches to let the communication flow between hosts
         Parameters:
-            src_host_name: name of the source host
-            dst_host_name: name of the destination source
+            src_host_ip: IP address of the source host
+            dst_host_ip: IP address of the destination host
         Returns:
             None
         """
-        src_ip = self.tm.get_device_by_name(f"{src_host_name}").get_ip()
-        dst_ip = self.tm.get_device_by_name(f"{dst_host_name}").get_ip()
-        src_mac = self.tm.get_mac_host_by_ip(src_ip)
-        dst_mac = self.tm.get_mac_host_by_ip(dst_ip)
-        src_dpid = self.tm.get_dpid_from_host[src_mac]  # dpid of the datapath connected to the src_host
-        dst_dpid = self.tm.get_dpid_from_host[dst_mac]  # dpid of the datapath connected to the dst_host
+        src_mac = self.tm.get_mac_host_by_ip(src_host_ip)
+        dst_mac = self.tm.get_mac_host_by_ip(dst_host_ip)
+        src_dpid = self.tm.get_dpid_from_host(src_mac)  # dpid of the datapath connected to the src_host
+        dst_dpid = self.tm.get_dpid_from_host(dst_mac)  # dpid of the datapath connected to the dst_host
         
         parser = ofproto_v1_4_parser
 
-        print(f"Setting up the rules between host(IP: {src_ip} / MAC: {src_mac}) and host(IP: {dst_ip} / MAC: {dst_mac})")
+        print(f"Setting up the rules between host(IP: {src_host_ip} / MAC: {src_mac}) and host(IP: {dst_host_ip} / MAC: {dst_mac})")
 
         if src_dpid in self.tm.topoSwitches and dst_dpid in self.tm.topoSwitches:
             path = self.tm.get_shortest_path(src_dpid, dst_dpid)    # Find the list of nodes to get from the source to the destination
@@ -202,16 +205,16 @@ class CustomRyuController(app_manager.RyuApp):
                         # Creating flow rule from the intranet to the host
                         actions = self.create_actions(out_port = in_port)
                         match = self.create_match(in_port = out_port, src_mac = dst_mac, dst_mac = src_mac)
-                        self.add_flow(first, match, actions)
-                        self.tm.add_rule_to_dict(firstDatapath, in_port = out_port, dl_src = dst_mac, dl_dst = src_mac, out_port = in_port)
+                        self.add_flow(firstDatapath, match, actions)
+                        self.tm.add_rule_to_dict(first, in_port = out_port, dl_src = dst_mac, dl_dst = src_mac, out_port = in_port)
 
                         # Creating flow rule from the host to the intranet
                         actions = self.create_actions(out_port = out_port)
                         match = self.create_match(in_port = in_port, src_mac = src_mac, dst_mac = dst_mac)
-                        self.add_flow(first, match, actions)
+                        self.add_flow(firstDatapath, match, actions)
                         self.tm.add_rule_to_dict(first, in_port = in_port, dl_src = src_mac, dl_dst = dst_mac, out_port = out_port)
 
-                    if i == len(path) - 1:  # If it's the last switch of the hops/steps. Create rule to manage the packets from the dst_host to the intranet and from the intranet to the dst_host
+                    elif i == len(path) - 1:  # If it's the last switch of the hops/steps. Create rule to manage the packets from the dst_host to the intranet and from the intranet to the dst_host
                         last = path[i]
                         secondToLast = path[i - 1]
                         lastDatapath = self.tm.get_device_by_name(f"switch_{last}").get_dp()
@@ -277,19 +280,57 @@ class CustomRyuController(app_manager.RyuApp):
             arp_packet = pkt.get_protocol(arp.arp)
             if arp_packet:
                 if arp_packet.opcode == arp.ARP_REQUEST:    # Handle ARP request
-                    # self.handle_arp_request(datapath, in_port, eth_header, arp_packet)
-                    print(f"ARP request received from switch_{dpid} with MAC: {src}")
+                    print(f"ARP request received from switch_{dpid} with source MAC: {src}")
+
+                    src_ip = arp_packet.src_ip
+                    src_mac = arp_packet.src_mac
+                    dst_ip = arp_packet.dst_ip
+                    
+                    # Obtain the MAC address corresponding to the requested IP address
+                    dst_mac = self.tm.get_mac_host_by_ip(dst_ip)
+                    
+                    # If the dst_mac is None, this isn't an ARP request from a host to a host, but it's a broadcasted ARP request, so it doesn't have a dst_mac
+                    if dst_mac is not None:
+                        # Construct an ARP reply
+                        arp_reply = arp.arp(
+                            opcode=arp.ARP_REPLY,
+                            src_mac=dst_mac,
+                            src_ip=dst_ip,
+                            dst_mac=src_mac,
+                            dst_ip=src_ip
+                        )
+
+                        # Construct the Ethernet frame
+                        eth_reply = ethernet.ethernet(
+                            ethertype=eth_header.ethertype,
+                            dst=eth_header.src,
+                            src=dst_mac
+                        )
+
+                        # Create the packet
+                        pkt = packet.Packet()
+                        pkt.add_protocol(eth_reply)
+                        pkt.add_protocol(arp_reply)
+
+                        print(str(src_mac) + " / " + str(dst_mac))
+
+                        pkt.serialize()
+
+                        # Create an OpenFlow packet_out message with the OpenFlow 1.4 protocol version
+                        actions = [datapath.ofproto_parser.OFPActionOutput(in_port)]
+                        out = datapath.ofproto_parser.OFPPacketOut(
+                            datapath=datapath,
+                            buffer_id=datapath.ofproto.OFP_NO_BUFFER,
+                            in_port=datapath.ofproto.OFPP_CONTROLLER,
+                            actions=actions,
+                            data=pkt.data
+                        )
+
+                        # Send the packet_out message to the switch
+                        datapath.send_msg(out)
 
                 elif arp_packet.opcode == arp.ARP_REPLY:    # Handle ARP reply
                     print(f"ARP reply received from switch_{dpid} with MAC: {src}")
-
-        src_dpid = self.tm.get_dpid_from_host(src)  # dpid source switch
-        dst_dpid = self.tm.get_dpid_from_host(dst)  # dpid destination switch
-
-        if src_dpid is not None and dst_dpid is not None:   # If the retrieving of the switches is succesfull
-            print(f"Packet in switch_{dpid}: Ethernet frame from switch_{src_dpid}(MAC: {src}) to switch_{dst_dpid}(MAC: {dst})")
-
-    # def handle_arp_request(self, datapath, in_port, eth_header,  arp_packet):    
 
     def add_flow(self, datapath, match, actions, priority = ofproto_v1_4.OFP_DEFAULT_PRIORITY):
         """
@@ -306,7 +347,7 @@ class CustomRyuController(app_manager.RyuApp):
         parser = ofproto_v1_4_parser
 
         # List of instructions for the flowMod
-        instruction = parser.OFPInstructionActions(type_ = ofproto.OFPIT_APPLY_ACTIONS, actions = actions)
+        instruction = [parser.OFPInstructionActions(type_ = ofproto.OFPIT_APPLY_ACTIONS, actions = actions)]
 
         flow_to_add_to_switch = parser.OFPFlowMod(
             datapath = datapath, 
@@ -316,7 +357,8 @@ class CustomRyuController(app_manager.RyuApp):
             hard_timeout = 0, 
             priority = priority, 
             match = match,
-            instructions = [instruction])
+            #actions = actions,
+            instructions = instruction)
         
         datapath.send_msg(flow_to_add_to_switch)    # Send the message to set up the flow, from the controller to the switch
 
@@ -346,8 +388,8 @@ class CustomRyuController(app_manager.RyuApp):
         parser = ofproto_v1_4_parser
         match = parser.OFPMatch(
             in_port = in_port,
-            dl_src = src_mac,
-            dl_dst = dst_mac
+            eth_src = src_mac,
+            eth_dst = dst_mac
         )
         return match
     
@@ -359,11 +401,3 @@ class CustomRyuController(app_manager.RyuApp):
         actions = [parser.OFPActionOutput(out_port)]
         return actions
     
-    def install_arp_flow_rule(self, datapath):
-        """
-        Method to install flow rules at the initialization of the switch in the topology, so the hosts can send ARP requests to the controller
-        """
-        ofproto = ofproto_v1_4
-        parser = ofproto_v1_4_parser
-
-        #match = parser.OFPMatch(eth)

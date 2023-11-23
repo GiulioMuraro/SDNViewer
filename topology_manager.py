@@ -2,7 +2,7 @@ from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 import networkx as nx
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg as FigureCanvas
 import matplotlib
-matplotlib.use('TkAgg')
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 class Device():
@@ -114,20 +114,18 @@ class TopoManager():
         Returns:
             None
         """
-        dpid_str = sw.dp.id
-
-        if dpid_str not in self.topoSwitches:   # If the new switch is not inside the topology, it will be added
-            name = "switch_{}".format(str(dpid_str))
+        dpid = sw.dp.id
+        if dpid not in self.topoSwitches:   # If the new switch is not inside the topology, it will be added
+            name = "switch_{}".format(str(dpid))
             switch = TMSwitch(name, sw)
 
             self.all_devices.append(switch)
-            self.network_graph.add_node(dpid_str)
-            self.topoSwitches[dpid_str] = {}    # Later with a add_link() method this dictionary will be populated
+            self.network_graph.add_node(dpid)
+            self.topoSwitches[dpid] = {}    # Later with a add_link() method this dictionary will be populated
             
-            print("Added switch to the topology and the graph: ", dpid_str)
-            print("Current network_graph nodes: ", self.network_graph.nodes)
+            print("Added switch to the topology and the graph: ", dpid)
         else:
-            print(f"The switch_{dpid_str} is already inside the topology. Nothing is being added")
+            print(f"The switch_{dpid} is already inside the topology. Nothing is being added")
 
         self.debug_show_topology()
 
@@ -139,24 +137,24 @@ class TopoManager():
         Returns:
             None
         """
-        dpid_str = str(sw.dp.id)
-
-        if dpid_str in self.topoSwitches:  # Check if the switch is in the topology
+        dpid = sw.dp.id
+        if dpid in self.topoSwitches:  # Check if the switch is in the topology
             # Clean up any associated data or connections here
 
             # Remove the switch from the list of all devices
-            self.all_devices = [device for device in self.all_devices if device.name != "switch_{}".format(dpid_str)]
+            self.all_devices = [device for device in self.all_devices if device.name != "switch_{}".format(dpid)]
 
             # Remove the switch from the network graph
-            self.network_graph.remove_node(dpid_str)
+            self.network_graph.remove_node(dpid)
 
             # Remove the switch from the topoSwitches dictionary
-            del self.topoSwitches[dpid_str]
+            del self.topoSwitches[dpid]
 
-            print("Removed switch from the topology and the graph: switch_", dpid_str)
-            print("Current network_graph nodes: ", self.network_graph.nodes)
+            print("Removed switch from the topology and the graph: switch_", dpid)
         else:
             print("The switch is not in the topology. Nothing to remove.")
+
+        self.debug_show_topology()
 
 
     def add_host(self, h):
@@ -174,16 +172,14 @@ class TopoManager():
         self.all_devices.append(host)
         self.network_graph.add_node(name)
         self.network_graph.add_edge(dpid, name) # Adding the edge from the host to the switch. In the network_graph the hosts are saved as their names, and the switches as their dpid
-        self.host_to_switch_dpid_port[h.mac] = {dpid, h.port.port_no}    # Saving the dpid and port to which the host is connected
-
-        print("Current mapping of the host_to_switch_dpid_port: ", self.host_to_switch_dpid_port)
+        self.host_to_switch_dpid_port[h.mac] = {"dpid": dpid, "port_no": h.port.port_no}    # Saving the dpid and port to which the host is connected
 
         self.debug_show_topology()
 
         pos = nx.spring_layout(self.network_graph)
         nx.draw(self.network_graph, pos, with_labels=True, node_size=500, font_size=10, font_color='black')
     
-        # Create a Matplotlib figure and draw the graph on it
+        '''# Create a Matplotlib figure and draw the graph on it
         fig = plt.figure(figsize=(3, 3))
         canvas = FigureCanvas(fig)
         ax = fig.add_subplot(111)
@@ -192,7 +188,7 @@ class TopoManager():
     
         # Save the figure to an image file
         canvas.print_png("graph_image" + str(self.counter) + ".png")
-        self.counter+=1
+        self.counter+=1'''
 
     def add_link(self, src_switch_dpid, src_port_no, dst_switch_dpid, dst_port_no):
         """
@@ -242,12 +238,15 @@ class TopoManager():
         src_switch_dpid = link.src.dpid
         dst_switch_dpid = link.dst.dpid
 
-        # Delete the edge from the graph
-        self.network_graph.remove_edge(src_switch_dpid, dst_switch_dpid)
-        
+        # Delete the edge from the graph, only if the edges are in the graph
+        if self.network_graph.has_edge(src_switch_dpid, dst_switch_dpid):
+            self.network_graph.remove_edge(src_switch_dpid, dst_switch_dpid)
+
         # Delete the output port in the topoSwitches list
-        self.topoSwitches[src_switch_dpid] = {}
-        self.topoSwitches[dst_switch_dpid] = {}
+        if src_switch_dpid in self.topoSwitches and dst_switch_dpid in self.topoSwitches[src_switch_dpid]:
+            del self.topoSwitches[src_switch_dpid][dst_switch_dpid]
+        if dst_switch_dpid in self.topoSwitches and src_switch_dpid in self.topoSwitches[dst_switch_dpid]:
+            del self.topoSwitches[dst_switch_dpid][src_switch_dpid]
 
     def get_mac_host_by_ip(self, ip_host):
         """
@@ -258,7 +257,7 @@ class TopoManager():
             MAC address of the host
         """
         for dev in self.all_devices:
-            if isinstance(dev, TMHost) and dev.get_ip() == ip_host:
+            if isinstance(dev, TMHost) and dev.get_ip()[0] == ip_host:
                 return dev.get_mac()
 
     def get_device_by_port(self, dpid, port_no):
@@ -314,8 +313,8 @@ class TopoManager():
             switch_port: the port of the switch connected to the host
         """
         switch_port = None
-        if host_mac in self.host_to_switch_dpid_port and switch_dpid in self.host_to_switch_dpid_port[host_mac]:
-            switch_port = self.host_to_switch_dpid_port[host_mac][switch_dpid]
+        if host_mac in self.host_to_switch_dpid_port and switch_dpid == self.host_to_switch_dpid_port[host_mac]['dpid']:
+            switch_port = self.host_to_switch_dpid_port[host_mac]['port_no']
             return switch_port
         else:
             return None
@@ -350,8 +349,8 @@ class TopoManager():
         """
         if host_mac in self.host_to_switch_dpid_port:
             inner_dict = self.host_to_switch_dpid_port[host_mac]
-            return list(inner_dict.keys())[0]   #Retrieve the first key, that is the only key the inner_dict will have. This first key is the dpid of the switch
-        
+            return inner_dict['dpid']   #This first key is the dpid of the switch
+    
     def get_output_port(self, src_switch_dpid, dst_switch_dpid):
         """
         Method to retrieve the output port for the src_switch to send data to dst_switch(The output port is of the src_switch)
@@ -390,6 +389,8 @@ class TopoManager():
         
         # Add the out_port to the corresponding flow_key for the specific dpid
         self.flow_rules[dpid][flow_key] = out_port
+
+        self.debug_show_topology()
 
     def get_rule_from_dict(self, dpid, in_port, dl_src, dl_dst):
         """
