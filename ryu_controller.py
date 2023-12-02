@@ -16,9 +16,10 @@ from ryu.app.wsgi import ControllerBase, WSGIApplication, route
 from ryu.lib.packet import packet, ether_types
 from ryu.lib.packet import  ethernet, arp
 
-from topology_manager import TopoManager
-import socket
-import pickle
+from topology_manager import TopoManager, TMHost, TMSwitch
+import json
+import networkx as nx
+from webob import Response
 
 class CommunicationAPI(ControllerBase):
 
@@ -26,12 +27,40 @@ class CommunicationAPI(ControllerBase):
         super(CommunicationAPI, self).__init__(req, link, data, **config)
         self.controller_app = data['controller_instance']
     
-    @route('communication', '/communication/{src_host_ip}/{dst_host_ip}', methods = ['GET'])
+    @route('communication', '/communication/{src_host_ip}/{dst_host_ip}', methods = ['POST'])
     def initiating_comunication(self, req, src_host_ip, dst_host_ip):
         print("Received request to initialize the communication")
         self.controller_app.set_up_rule_for_hosts(src_host_ip, dst_host_ip)
 
+    @route('communication', '/communication/{src_host_ip}/{dst_host_ip}', methods = ['DELETE'])
+    def stop_communication(self, req, src_host_ip, dst_host_ip):
+        print("Received request to stop the communication")
+        self.controller_app.delete_rule_for_hosts(src_host_ip, dst_host_ip)
 
+    @route('topology', '/topology/graph', methods = ['GET'])
+    def get_graph_topology(self, req):
+        print("Received request to retrieve the NetworkX Graph of the SDN")
+        
+        serialized_graph = self.controller_app.get_topology_graph()
+
+        # Create a webob.Response with JSON content
+        resp = Response(content_type = 'application/json; charset=utf-8', body = serialized_graph)
+        return resp
+
+
+    @route('topology', '/topology/node/{device_name}', methods = ['GET'])
+    def get_host_information(self, req, device_name):
+        print("Received request to retrieve device information")
+        serialized_device_info = self.controller_app.get_device_info(device_name)
+
+        # Create a webob.Response with JSON content
+        resp = Response(content_type = 'application/json; charset=utf-8', body = serialized_device_info)
+        return resp
+
+    @route('debug', '/debug/show_information', methods = ['GET'])
+    def get_debug_info(self, req):
+        print("Received request to show debug information")
+        self.controller_app.tm.debug_show_topology()
 
 class CustomRyuController(app_manager.RyuApp):
     # Select the version of the OpenFlow protocol
@@ -150,26 +179,6 @@ class CustomRyuController(app_manager.RyuApp):
 
         self.add_flow(datapath, match, actions, 100)
 
-    def send_to_thread(self):
-        """
-        Method to send through a Thread the updated network_graph
-        """
-        graph = self.tm.network_graph 
-        
-        
-        # Serialize the graph using pickle
-        serialized_graph = pickle.dumps(graph)
-
-        # Create a socket connection and send the serialized graph
-        try:
-            print("Sending graph topology")
-            self.guiSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.guiSocket.connect((self.ipRyuApp, 7001))   # Using the port 7001 to send the graph. The GUI will receive the graph on this listening port (for the GUI)
-            self.guiSocket.send(serialized_graph)
-            self.guiSocket.close()
-        except Exception as e:
-            print("Error sending network_graph:", e)
-
     def set_up_rule_for_hosts(self, src_host_ip, dst_host_ip):
         """
         Method callable from the CommunicationAPI to set the rules between the switches to let the communication flow between hosts
@@ -256,6 +265,131 @@ class CustomRyuController(app_manager.RyuApp):
                         match = self.create_match(in_port = out_port, src_mac = dst_mac, dst_mac = src_mac)
                         self.add_flow(currentDatapath, match, actions)
                         self.tm.add_rule_to_dict(current, in_port = out_port, dl_src = dst_mac, dl_dst = src_mac, out_port = in_port)
+
+    def delete_rule_for_hosts(self, src_host_ip, dst_host_ip):
+        """
+        Method callable from the CommunicationAPI to delete the rules between the switches to let the communication stop between hosts
+        Parameters:
+            src_host_ip: IP address of the source host
+            dst_host_ip: IP address of the destination host
+        Returns:
+            None
+        """
+        src_mac = self.tm.get_mac_host_by_ip(src_host_ip)
+        dst_mac = self.tm.get_mac_host_by_ip(dst_host_ip)
+        src_dpid = self.tm.get_dpid_from_host(src_mac)  # dpid of the datapath connected to the src_host
+        dst_dpid = self.tm.get_dpid_from_host(dst_mac)  # dpid of the datapath connected to the dst_host
+
+        parser = ofproto_v1_4_parser
+
+        print(f"Deleting rules between host (IP: {src_host_ip} / MAC: {src_mac}) and host (IP: {dst_host_ip} / MAC: {dst_mac})")
+
+        if src_dpid in self.tm.topoSwitches and dst_dpid in self.tm.topoSwitches:
+            path = self.tm.get_shortest_path(src_dpid, dst_dpid)    # Find the list of nodes to get from the source to the destination
+            if path is not None and len(path) > 1:
+                print(f"The shortest path is: {path}")
+                for i in range(0, len(path)):
+                    if i == 0:  # If it's the first switch of the hops/steps. Delete rule for packets from src_host to intranet and from intranet to src_host
+                        first = path[i]
+                        second = path[i + 1]
+                        firstDatapath = self.tm.get_device_by_name(f"switch_{first}").get_dp()
+
+                        # Extract the in and out port of the first switch
+                        out_port = self.tm.get_output_port(first, second)
+                        in_port = self.tm.get_host_port_connected_to_switch(src_mac, first)
+
+                        # Deleting flow rule from the intranet to the host
+                        match = self.create_match(in_port=out_port, src_mac=dst_mac, dst_mac=src_mac)
+                        self.delete_flow_rule(firstDatapath, match)
+                        self.tm.delete_rule_from_dict(first, in_port = out_port, dl_src = dst_mac, dl_dst = src_mac)
+
+                        # Deleting flow rule from the host to the intranet
+                        match = self.create_match(in_port=in_port, src_mac=src_mac, dst_mac=dst_mac)
+                        self.delete_flow_rule(firstDatapath, match)
+                        self.tm.delete_rule_from_dict(first, in_port = in_port, dl_src = src_mac, dl_dst = dst_mac)
+
+                    elif i == len(path) - 1:  # If it's the last switch of the hops/steps. Delete rule for packets from the dst_host to the intranet and from the intranet to the dst_host
+                        last = path[i]
+                        secondToLast = path[i - 1]
+                        lastDatapath = self.tm.get_device_by_name(f"switch_{last}").get_dp()
+
+                        # Extracting the in and out port of the last switch
+                        out_port = self.tm.get_host_port_connected_to_switch(dst_mac, last)
+                        in_port = self.tm.get_output_port(last, secondToLast)
+
+                        # Deleting flow rule from the intranet to the host
+                        match = self.create_match(in_port=in_port, src_mac=src_mac, dst_mac=dst_mac)
+                        self.delete_flow_rule(lastDatapath, match)
+                        self.tm.delete_rule_from_dict(last, in_port = in_port, dl_src = src_mac, dl_dst = dst_mac)
+
+                        # Deleting flow rule from the host to the intranet
+                        match = self.create_match(in_port=out_port, src_mac=dst_mac, dst_mac=src_mac)
+                        self.delete_flow_rule(lastDatapath, match)
+                        self.tm.delete_rule_from_dict(last, in_port = out_port, dl_src = dst_mac, dl_dst = src_mac)
+
+                    else:   # If it's one of the switches between the first and the last. Delete rule for packets from the previous switch to the current and from the current to the next
+                        prev = path[i - 1]
+                        current = path[i]
+                        next = path[i + 1]
+                        currentDatapath = self.tm.get_device_by_name(f"switch_{current}").get_dp()
+
+                        # Extracting the in and out port of the current switch
+                        out_port = self.tm.get_output_port(current, next)   # Where the packet is going
+                        in_port = self.tm.get_output_port(current, prev)    # Where the packet comes from
+
+                        # Deleting flow rule from the previous switch to the current
+                        match = self.create_match(in_port=in_port, src_mac=src_mac, dst_mac=dst_mac)
+                        self.delete_flow_rule(currentDatapath, match)
+                        self.tm.delete_rule_from_dict(current, in_port = in_port, dl_src = src_mac, dl_dst = dst_mac)
+
+                        # Deleting flow rule from the current switch to the next
+                        match = self.create_match(in_port=out_port, src_mac=dst_mac, dst_mac=src_mac)
+                        self.delete_flow_rule(currentDatapath, match)
+                        self.tm.delete_rule_from_dict(current, in_port = out_port, dl_src = dst_mac, dl_dst = src_mac)
+
+
+    def get_topology_graph(self):
+        """
+        Method to retrieve the networkX graph from the controller
+        """
+        serialized_graph_data = json.dumps(nx.node_link_data(self.tm.network_graph))
+        return serialized_graph_data
+
+    def get_device_info(self, device_name):
+        """
+        Method to retrieve information about a device in my topology
+        Parameters:
+            device_name: Name of the device you want the info of
+        Returns:
+            None
+        """
+        device_info = {}
+        print(device_name)
+        dev = self.tm.get_device_by_name(device_name)
+        if isinstance(dev, TMHost):
+            device_info['type'] = "Host"
+            device_info['name'] = dev.get_name()
+            device_info['ipv4'] = dev.get_ip()
+            device_info['mac'] = dev.get_mac()
+            port = dev.get_port()
+            device_info['port'] = {'port_no': port.port_no, 'dpid': port.dpid}
+
+        elif isinstance(dev, TMSwitch):
+            device_info['type'] = "Switch"
+            device_info['name'] = dev.get_name()
+            device_info['dpid'] = dev.get_dpid()
+            ports = dev.get_ports()
+            device_info['ports'] = []
+            for port in ports:
+                port_info = {
+                    'port_no': port.port_no,
+                    'port_name': port.name.decode('utf-8'),
+                    'port_hw_addr': port.hw_addr,
+                }
+                device_info['ports'].append(port_info)
+        print(device_info)
+
+        return json.dumps(device_info)
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
@@ -357,17 +491,24 @@ class CustomRyuController(app_manager.RyuApp):
             hard_timeout = 0, 
             priority = priority, 
             match = match,
-            #actions = actions,
             instructions = instruction)
         
         datapath.send_msg(flow_to_add_to_switch)    # Send the message to set up the flow, from the controller to the switch
 
-    def delete_flow_rule(self, datapath, in_port, out_port):
+    def delete_flow_rule(self, datapath, match):
+        """
+        Method to delete a flow rule for a specific datapath
+        Parameters:
+            datapath: Switch for which delete the rules
+            match: match to which delete the rules
+        Returns:
+            None
+        """
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 
-        # Create a match for the existing rule based on in_port and out_port
-        match = parser.OFPMatch(in_port=in_port, out_port=out_port)
+        # List of instructions for the flowMod
+        instruction = [parser.OFPInstructionActions(type_=ofproto.OFPIT_CLEAR_ACTIONS, actions=[])]  # Use CLEAR_ACTIONS to delete all actions
 
         # Create a flow mod message to delete the rule
         flow_mod = parser.OFPFlowMod(
@@ -375,7 +516,8 @@ class CustomRyuController(app_manager.RyuApp):
             command=ofproto.OFPFC_DELETE_STRICT,  # Use DELETE_STRICT for precise deletion
             out_port=ofproto.OFPP_ANY,
             out_group=ofproto.OFPG_ANY,
-            match=match  # Set the match condition
+            match=match,  # Set the match condition
+            instructions = instruction
         )
 
         # Send the flow mod message to the switch

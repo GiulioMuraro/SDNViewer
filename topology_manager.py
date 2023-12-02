@@ -127,7 +127,7 @@ class TopoManager():
         else:
             print(f"The switch_{dpid} is already inside the topology. Nothing is being added")
 
-        self.debug_show_topology()
+        # self.debug_show_topology()
 
     def remove_switch(self, sw):
         """
@@ -154,7 +154,7 @@ class TopoManager():
         else:
             print("The switch is not in the topology. Nothing to remove.")
 
-        self.debug_show_topology()
+        # self.debug_show_topology()
 
 
     def add_host(self, h):
@@ -165,7 +165,7 @@ class TopoManager():
         Returns:
             None
         """
-        name = "host_{}".format(h.mac)
+        name = "host_{}".format(str(h.mac)[-1])
         host = TMHost(name, h)
         dpid = h.port.dpid
         
@@ -174,21 +174,7 @@ class TopoManager():
         self.network_graph.add_edge(dpid, name) # Adding the edge from the host to the switch. In the network_graph the hosts are saved as their names, and the switches as their dpid
         self.host_to_switch_dpid_port[h.mac] = {"dpid": dpid, "port_no": h.port.port_no}    # Saving the dpid and port to which the host is connected
 
-        self.debug_show_topology()
-
-        pos = nx.spring_layout(self.network_graph)
-        nx.draw(self.network_graph, pos, with_labels=True, node_size=500, font_size=10, font_color='black')
-    
-        '''# Create a Matplotlib figure and draw the graph on it
-        fig = plt.figure(figsize=(3, 3))
-        canvas = FigureCanvas(fig)
-        ax = fig.add_subplot(111)
-        ax.set_axis_off()
-        nx.draw(self.network_graph, pos, ax=ax, with_labels=True, node_size=500, font_size=10, font_color='black')
-    
-        # Save the figure to an image file
-        canvas.print_png("graph_image" + str(self.counter) + ".png")
-        self.counter+=1'''
+        # self.debug_show_topology()
 
     def add_link(self, src_switch_dpid, src_port_no, dst_switch_dpid, dst_port_no):
         """
@@ -225,7 +211,7 @@ class TopoManager():
         self.topoSwitches[src_switch_dpid][dst_switch_dpid] = src_port_no   # The switch src to send something to the switch dst has to use the port src_port_no
         self.topoSwitches[dst_switch_dpid][src_switch_dpid] = dst_port_no
 
-        self.debug_show_topology()
+        # self.debug_show_topology()
 
     def remove_link_between_switches(self, link):
         """
@@ -390,7 +376,35 @@ class TopoManager():
         # Add the out_port to the corresponding flow_key for the specific dpid
         self.flow_rules[dpid][flow_key] = out_port
 
-        self.debug_show_topology()
+        # self.debug_show_topology()
+
+    def delete_rule_from_dict(self, dpid, in_port, dl_src, dl_dst):
+        """
+        Method to delete a forwarding rule from the topology manager.
+        Parameters:
+            dpid: Switch to delete the forwarding rule from.
+            in_port: In_port of the switch where it receives the packet.
+            dl_src: MAC address of the source host.
+            dl_dst: MAC address of the destination host.
+        Returns:
+            None
+        """
+        # Create the flow_key using in_port, dl_src, and dl_dst
+        flow_key = (in_port, dl_src, dl_dst)
+
+        # Check if the dpid is in the flow_rules dictionary
+        if dpid in self.flow_rules:
+            # Check if the flow_key exists for the given dpid
+            if flow_key in self.flow_rules[dpid]:
+                # Delete the flow_key entry for the specific dpid
+                del self.flow_rules[dpid][flow_key]
+
+                # If there are no more flow_keys for the dpid, remove the dpid entry
+                if not self.flow_rules[dpid]:
+                    del self.flow_rules[dpid]
+
+        # self.debug_show_topology()
+
 
     def get_rule_from_dict(self, dpid, in_port, dl_src, dl_dst):
         """
