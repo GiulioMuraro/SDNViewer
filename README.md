@@ -84,32 +84,32 @@ python3 sdn_GUI.py
 The controller extends the ControllerBase class and is designed to manage and manipulate network rules through a RESTful API.
 Key Features:
 
-1. Initialization of Communication: 
-        - Method: initiating_comunication 
-        - Route: /communication/{src_host_ip}/{dst_host_ip} 
-        - HTTP Method: POST 
+1. Initialization of Communication:  
+        - Method: initiating_comunication  
+        - Route: /communication/{src_host_ip}/{dst_host_ip}  
+        - HTTP Method: POST  
         - Description: Handles incoming requests to initialize communication between specified source and                destination hosts. Invokes the set_up_rule_for_hosts method in the underlying controller application. 
 
-2. Termination of Communication: 
-        - Method: stop_communication 
-        - Route: /communication/{src_host_ip}/{dst_host_ip} 
-        - HTTP Method: DELETE 
+2. Termination of Communication:  
+        - Method: stop_communication  
+        - Route: /communication/{src_host_ip}/{dst_host_ip}  
+        - HTTP Method: DELETE  
         - Description: Processes requests to stop communication between specified source and destination hosts.            Utilizes the delete_rule_for_hosts method in the controller application.
 
-3. Graph Topology Retrieval: 
-        - Method: get_graph_topology 
-        - Route: /topology/graph 
-        - HTTP Method: GET 
+3. Graph Topology Retrieval:  
+        - Method: get_graph_topology  
+        - Route: /topology/graph  
+        - HTTP Method: GET  
         - Description: Responds to requests seeking the NetworkX Graph representation of the SDN topology.                 Invokes the get_topology_graph method in the controller application and returns the serialized graph             in JSON format.
 
-4. Device Information Retrieval: 
-        - Method: get_host_information 
-        - Route: /topology/node/{device_name} 
-        - HTTP Method: GET 
+4. Device Information Retrieval:  
+        - Method: get_host_information  
+        - Route: /topology/node/{device_name}  
+        - HTTP Method: GET  
         - Description: Handles requests for retrieving information about a specific network device. Invokes the            get_device_info method in the controller application and returns the serialized device information in            JSON format.
 
-5. Debug Information Display: 
-        - Method: get_debug_info 
-        - Route: /debug/show_information 
-        - HTTP Method: GET 
+5. Debug Information Display:  
+        - Method: get_debug_info  
+        - Route: /debug/show_information  
+        - HTTP Method: GET  
         - Description: Responds to requests for displaying debug information. Invokes the debug_show_topology              method in the controller application, showcasing relevant debugging details.
