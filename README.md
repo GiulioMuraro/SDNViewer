@@ -26,3 +26,24 @@ Developed using the Tkinter library for the GUI components, the application inte
 and functionalities to provide a user-friendly platform for network administrators and testers. 
 These are the key features/components: Graph Display section, Details View section, Topology loading section, 
 Ryu-controller output section, Mininet CLI Terminal section and HTTP requests to controller section.
+
+## Files and Components
+
+This project consists of the following key files:
+
+1. 'ryu_controller.py': This file contains the Ryu controller logic responsible for managing the network topology. It uses the shortest path switching to let the hosts communicate.
+2. 'topology_manager.py': The topoManager app is designed to manage the adding,removing of devices in the topology. It manages the storing of flow rules for the switches, and the mapping of the hosts, with their IPs and switches to which they are connected.
+3. 'mininet_runner.py': This file contains the emulation of the SDN topologies using Mininet as emulator.
+4. 'sdn_GUI.py': This file contains the GUI to test the SDN deployment.
+
+## Prerequisites
+
+Before using the SDN ensure you have the following mandatory modules installed:
+
+- Ryu Framework
+- Mininet
+- NetworkX
+- Arping
+- Matplotlib
+- Tkinter
+
