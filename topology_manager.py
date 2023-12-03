@@ -1,9 +1,5 @@
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 import networkx as nx
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg as FigureCanvas
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 
 class Device():
     """

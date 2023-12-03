@@ -6,7 +6,7 @@ from mininet.net import Mininet
 from mininet.node import RemoteController
 from mininet.topo import Topo, SingleSwitchTopo, LinearTopo
 from mininet.topolib import TreeTopo
-from mininet.log import setLogLevel, info, error
+from mininet.log import setLogLevel, info
 
 # Topology with 10 hosts and 6 switch
 class AssignOneTopo(Topo):

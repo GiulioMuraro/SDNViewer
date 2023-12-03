@@ -17,7 +17,6 @@ from PIL import Image, ImageTk
 
 import threading
 import requests
-import json
 from networkx.readwrite import json_graph
 
 # IP and port of Ryu App
@@ -49,6 +48,9 @@ def create_graph_image(netGraph):
     # Load the image using PIL
     image = Image.open(image_path)
     photo = ImageTk.PhotoImage(image)
+
+    # Closing figure to avoid creating too much figures with matplotlib
+    plt.close(fig)
     
     return photo
 
@@ -133,7 +135,7 @@ def buttonSendHTTPRequest():
             response = requests.get(url)
         elif method == "POST":
             response = requests.post(url)
-        elif response == "DELETE":
+        elif method == "DELETE":
             response = requests.delete(url)
 
         # Check if the request was successful (status code 200)
@@ -164,7 +166,7 @@ def buttonSendHTTPRequest():
                 detailsTextBox.configure(state = 'disabled')
             elif "http://localhost:8080/communication/" in url and method == "POST":    # Request to enable communication between hosts
                 pass
-            elif "http://127.0.0.1:8080/communication/" in url and method == "DELETE":  # Request to disable communication between hosts
+            elif "http://localhost:8080/communication/" in url and method == "DELETE":  # Request to disable communication between hosts
                 pass
             elif "http://localhost:8080/debug/show_information" in url: # Request to print information logs in the ryu frame
                 pass
