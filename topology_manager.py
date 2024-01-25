@@ -474,3 +474,26 @@ class TopoManager():
 
         print("FLOW RULES: ")
         print(self.flow_rules)
+
+        output_file_path = "debug_info.txt"
+         # Write information to a text file
+        with open(output_file_path, "w") as output_file:
+            output_file.write("\nDEVICES: \n")
+            output_file.write(str(self.all_devices) + "\n")
+
+            output_file.write("LINKS: \n")
+            output_file.write(str(self.all_links) + "\n")
+
+            output_file.write("DATAPATHS: \n")
+            output_file.write(str(self.topoSwitches) + "\n")
+
+            output_file.write("DATAPATH TO HOST LOOKUP: \n")
+            output_file.write(str(self.host_to_switch_dpid_port) + "\n")
+
+            output_file.write("NETWORK GRAPH: \n")
+            output_file.write(str(self.network_graph) + "\n")
+            output_file.write("Nodes: " + str(self.network_graph.nodes) + "\n")
+            output_file.write("Edges: " + str(self.network_graph.edges) + "\n")
+
+            output_file.write("FLOW RULES: \n")
+            output_file.write(str(self.flow_rules) + "\n")
